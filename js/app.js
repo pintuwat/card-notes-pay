@@ -883,6 +883,8 @@ async function importData(e) {
 // ---------- navigation / render ----------
 async function go(screen) { State.screen = screen; await rerender(screen); }
 async function rerender(screen) {
+  const isNavigation = screen && screen !== State.screen;
+  const savedScroll = isNavigation ? 0 : view.scrollTop;
   if (screen) State.screen = screen;
   await refresh();
   applyStaticI18n();
@@ -898,7 +900,7 @@ async function rerender(screen) {
     if (target) { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); target.classList.add('highlight'); setTimeout(() => target.classList.remove('highlight'), 1500); }
     State.scrollToCardId = null;
   } else {
-    view.scrollTop = 0;
+    view.scrollTop = savedScroll;
   }
 }
 function applyStaticI18n() {

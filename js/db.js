@@ -92,10 +92,33 @@ const DB = (() => {
 
   const STORES = ['cards', 'spending', 'transactions', 'income', 'installments', 'meta'];
   async function importAll(data) {
+    // Preserve paid status before wiping spending.
+    // Match by cardName+month (robust against cardId shifts on re-sync).
+    const oldCards = await getAll('cards');
+    const oldSpending = await getAll('spending');
+    const cardNameById = Object.fromEntries(oldCards.map(c => [c.id, c.name]));
+    const paidMap = {};
+    for (const s of oldSpending) {
+      if (s.paid) paidMap[`${cardNameById[s.cardId]}|${s.month}`] = s.paidDate || null;
+    }
+
     // Cards, spending, transactions, meta: full replace
     for (const store of ['cards', 'spending', 'transactions', 'meta']) {
       await clear(store);
       for (const row of (data[store] || [])) await put(store, row);
+    }
+
+    // Restore paid status — sync data always has paid=false for current months
+    const newCards = await getAll('cards');
+    const cardNameByNewId = Object.fromEntries(newCards.map(c => [c.id, c.name]));
+    const newSpending = await getAll('spending');
+    for (const s of newSpending) {
+      const key = `${cardNameByNewId[s.cardId]}|${s.month}`;
+      if (!s.paid && paidMap.hasOwnProperty(key)) {
+        s.paid = true;
+        s.paidDate = paidMap[key];
+        await put('spending', s);
+      }
     }
     // Income: only overwrite if incoming data has records
     // (Mac sync always sends income:[] — preserve manually-entered income)
