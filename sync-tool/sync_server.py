@@ -14,10 +14,15 @@ Then open the printed URL:
 Everything stays on your Mac. config.json holds your birthdate (to derive the
 PDF passwords) and the app folder path.
 """
-import json, os, socket, subprocess, sys, threading
+import base64, json, os, socket, ssl, subprocess, sys, threading, urllib.request, urllib.error
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+try:
+    import certifi as _certifi
+    _SSL_CTX = ssl.create_default_context(cafile=_certifi.where())
+except ImportError:
+    _SSL_CTX = ssl.create_default_context()
 
 HERE = Path(__file__).resolve().parent
 CFG = json.load(open(HERE / "config.json"))
@@ -35,6 +40,55 @@ STATEMENTS = HERE / "statements"
 
 def is_first_sync():
     return not (STATEMENTS / "_emails.json").exists()
+
+
+def _gist_request(method, url, token, body=None):
+    headers = {"Authorization": f"token {token}", "Content-Type": "application/json",
+                "Accept": "application/vnd.github.v3+json", "User-Agent": "cardpay-sync/1.0"}
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, context=_SSL_CTX) as resp:
+        return json.loads(resp.read())
+
+
+def push_to_github(raw_json: bytes):
+    """Push data JSON to a private GitHub Gist (background thread).
+
+    First run: creates the Gist and saves its ID to config.json.
+    Later runs: updates the existing Gist.
+    iPhone reads from the secret raw Gist URL (no auth needed).
+    """
+    gh = CFG.get("github_push", {})
+    if not gh.get("enabled") or not gh.get("token"):
+        return
+    token = gh["token"]
+    content = raw_json.decode()
+    gist_id = gh.get("gist_id", "")
+
+    try:
+        if gist_id:
+            _gist_request("PATCH", f"https://api.github.com/gists/{gist_id}", token,
+                          {"files": {"cardpay-mydata.json": {"content": content}}})
+            print(f"[gist] updated gist {gist_id[:8]}…")
+        else:
+            result = _gist_request("POST", "https://api.github.com/gists", token, {
+                "description": "CardPay sync data",
+                "public": False,
+                "files": {"cardpay-mydata.json": {"content": content}},
+            })
+            gist_id = result["id"]
+            username = result["owner"]["login"]
+            stable_url = f"https://gist.githubusercontent.com/{username}/{gist_id}/raw/cardpay-mydata.json"
+            # Save gist_id so future syncs update instead of create
+            cfg_path = HERE / "config.json"
+            cfg = json.loads(cfg_path.read_text())
+            cfg["github_push"]["gist_id"] = gist_id
+            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+            CFG["github_push"]["gist_id"] = gist_id
+            print(f"[gist] created new private gist!")
+            print(f"[gist] iPhone URL (stable): {stable_url}")
+    except Exception as e:
+        print(f"[gist] push failed: {e}")
 
 
 def run_sync():
@@ -63,6 +117,32 @@ def run_sync():
         return False, "Timed out talking to Gmail."
     except Exception as e:
         return False, str(e)
+
+
+def _sync_and_push():
+    """Run fetch+parse, push the result to the gist, print status. Shared by the
+    HTTP /api/sync handler and the automatic sync that fires when the server starts."""
+    print("[sync] reading Gmail…")
+    ok, payload = run_sync()
+    if ok:
+        n = len(payload.get("spending", []))
+        print(f"[sync] done — {len(payload.get('cards', []))} cards, {n} card-months")
+        raw = DOWNLOAD.read_bytes()
+        threading.Thread(target=push_to_github, args=(raw,), daemon=True).start()
+    else:
+        print("[sync] failed:", payload)
+    return ok, payload
+
+
+def _startup_sync():
+    """Kick a sync right when the server comes up, so the very command that starts
+    serving also fetches the latest statements — no separate fetch step or app tap needed."""
+    if not _lock.acquire(blocking=False):
+        return
+    try:
+        _sync_and_push()
+    finally:
+        _lock.release()
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -103,14 +183,10 @@ class Handler(SimpleHTTPRequestHandler):
         if not _lock.acquire(blocking=False):
             return self._json(429, {"ok": False, "error": "A sync is already running."})
         try:
-            print("[sync] reading Gmail…")
-            ok, payload = run_sync()
+            ok, payload = _sync_and_push()
             if ok:
-                n = len(payload.get("spending", []))
-                print(f"[sync] done — {len(payload.get('cards', []))} cards, {n} card-months")
                 self._json(200, payload)
             else:
-                print("[sync] failed:", payload)
                 self._json(500, {"ok": False, "error": payload})
         finally:
             _lock.release()
@@ -128,16 +204,27 @@ def lan_ip():
         return "127.0.0.1"
 
 
+class QuietHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True  # avoids "Address already in use" after a crash/restart
+
+    def handle_error(self, request, client_address):
+        import sys
+        if isinstance(sys.exc_info()[1], ConnectionResetError):
+            return  # iPhone drops connection during reachability probes — not an error
+        super().handle_error(request, client_address)
+
+
 def main():
     if not (HERE / "token.json").exists():
         print("⚠  No token.json yet — run ./sync.sh once to authorize Gmail first.")
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    srv = QuietHTTPServer(("0.0.0.0", PORT), Handler)
     ip = lan_ip()
     print("\n  Card Notes & Pay — local sync server")
     print(f"  ▶ On this Mac:   http://localhost:{PORT}")
     print(f"  ▶ On your phone: http://{ip}:{PORT}   (same Wi-Fi)")
-    print("  Open that URL and tap 🔄 Sync to read the latest statements.")
+    print("  Fetching the latest statements now, then serving. Tap 🔄 Sync in the app anytime for another refresh.")
     print("  Ctrl+C to stop.\n")
+    threading.Thread(target=_startup_sync, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

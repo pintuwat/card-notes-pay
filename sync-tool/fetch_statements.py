@@ -108,8 +108,10 @@ def main():
 
     # Card-issuer senders (reliable: catches every monthly statement regardless of subject).
     ISSUERS = ("kasikornbank.com OR cardx.co.th OR eservice.ttbbank.com OR "
-               "ktc.co.th OR krungsri.com OR centralthe1card.com")
-    query = args.query or f'from:({ISSUERS}) has:attachment after:{args.since}'
+               "ktc.co.th OR krungsri.com OR centralthe1card.com OR uob.co.th")
+    # UOB doesn't email e-statements to this address — they arrive self-forwarded from
+    # your own address instead, so catch those by subject ("Uob statement", "Uob july", ...).
+    query = args.query or f'(from:({ISSUERS}) OR subject:uob) has:attachment after:{args.since}'
     OUT.mkdir(exist_ok=True)
     svc = get_service()
 

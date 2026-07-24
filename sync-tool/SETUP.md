@@ -26,13 +26,13 @@ Log in to Google Cloud Console **with intuwat.fin@gmail.com**: https://console.c
 Save that downloaded file as **exactly** this name and location:
 
 ```
-/Users/pchaiintuwat/Documents/Claude_AI/Program/Mini_Project/cardpay_gmail_fetch/credentials.json
+/Users/pchaiintuwat/Documents/Claude_AI/Program/Mini_Project/CreditCard_Notes&Pay/sync-tool/credentials.json
 ```
 
 ## 3. Install libraries (one time)
 
 ```
-cd /Users/pchaiintuwat/Documents/Claude_AI/Program/Mini_Project/cardpay_gmail_fetch
+cd "/Users/pchaiintuwat/Documents/Claude_AI/Program/Mini_Project/CreditCard_Notes&Pay/sync-tool"
 pip3 install -r requirements.txt
 ```
 

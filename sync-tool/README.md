@@ -9,7 +9,8 @@ See **SETUP.md** (create a Google OAuth credential, save `credentials.json` here
 `pip3 install -r requirements.txt`).
 
 ## Best: one-tap Sync from inside the app
-Start the local sync server (keep it running while you use the app):
+One command does both — fetches the latest statements from Gmail **and** starts
+serving the app:
 ```
 python3 sync_server.py
 ```
@@ -17,9 +18,11 @@ It prints URLs — **open the app from one of them** (not the github.io URL):
 - on this Mac: `http://localhost:8787`
 - on your phone (same Wi-Fi): `http://<your-mac-name>.local:8787` (e.g. `http://MacbookAir.local:8787`)
 
-Then just tap **🔄 Sync** — it reads Gmail, parses the latest statements, and
-refreshes automatically (no file picking). Your birthdate (for the PDF
-passwords) lives in `config.json` on this Mac.
+The first thing it does on startup is read Gmail and parse the latest
+statements in the background while it starts serving, so opening the app
+right after already has fresh data. Tap **🔄 Sync** anytime after that for
+another refresh. Your birthdate (for the PDF passwords) lives in `config.json`
+on this Mac.
 
 ### Important: the public github.io app can't auto-sync
 The hosted app is **HTTPS**; this server is **HTTP**. Browsers (especially iOS)

@@ -1,7 +1,0 @@
-{
-  "_comment": "Copy this to config.json and fill in your birthdate. config.json is gitignored.",
-  "dob": "DD/MM/YYYY",
-  "since": "2026/01/01",
-  "app_dir": "",
-  "port": 8787
-}
