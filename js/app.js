@@ -123,7 +123,9 @@ Screens.home = async () => {
   const inc = await DB.income.get(month);
   const income = inc ? inc.amount : 0;
   const monthSpend = State.spending.filter(s => s.month === month);
-  const totalSpend = monthSpend.reduce((a, s) => a + (s.amount || 0), 0);
+  // Amount to pay stays at the full card total (the bank still bills it); spending totals
+  // net out transactions someone else is reimbursing, since that money isn't really yours spent.
+  const totalSpend = monthSpend.reduce((a, s) => a + (s.amount || 0), 0) - reimbursedFor(month);
   const unpaid = monthSpend.filter(s => !s.paid).reduce((a, s) => a + (s.amount || 0), 0);
   const activeInst = State.installments.filter(i => {
     if (!i.startDate) return false;
@@ -177,7 +179,7 @@ Screens.home = async () => {
   // by card breakdown
   wrap.append(sectionTitle(t('home.byCard')));
   const byCard = State.cards.map(c => {
-    const amt = monthSpend.filter(s => s.cardId === c.id).reduce((a, s) => a + s.amount, 0);
+    const amt = monthSpend.filter(s => s.cardId === c.id).reduce((a, s) => a + s.amount, 0) - reimbursedFor(month, c.id);
     return { c, amt };
   }).filter(x => x.amt > 0).sort((a, b) => b.amt - a.amt);
   if (!byCard.length) wrap.append(emptyNote(t('home.none')));
@@ -454,20 +456,20 @@ Screens.cardDetail = async () => {
       sp ? h('strong', {}, money(sp.amount)) : h('span', {}, ''),
     ]));
     if (!mtx.length) wrap.append(h('div', { class: 'muted small tx-empty' }, t('tx.none')));
-    mtx.forEach(x => {
-      const credit = x.amount < 0;
-      wrap.append(h('div', { class: 'tx-row' }, [
-        h('div', { class: 'tx-date' }, (x.date || '').slice(0, 5)),
-        h('div', { class: 'tx-desc' }, x.desc || ''),
-        h('div', { class: 'tx-amt' + (credit ? ' credit' : '') }, (credit ? '+' : '') + money(Math.abs(x.amount))),
-      ]));
-    });
+    mtx.forEach(x => wrap.append(txRow(x)));
   }
   return wrap;
 };
 function txDateKey(x) {
   const m = (x.date || '').match(/(\d{2})\/(\d{2})/);
   return m ? Number(m[2]) * 100 + Number(m[1]) : 0;
+}
+// Sum of transactions someone else is paying you back for — excluded from spending totals
+// but left in the card's amount to pay (the bank still bills the full statement amount).
+function reimbursedFor(month, cardId) {
+  return State.transactions
+    .filter(x => x.month === month && x.reimbursed && (cardId == null || x.cardId === cardId))
+    .reduce((a, x) => a + Math.abs(x.amount || 0), 0);
 }
 
 Screens.settings = async () => {
@@ -592,15 +594,110 @@ function showMonthTx(card, month) {
     h('div', { class: 'tx-month' }, [h('span', {}, ymLabel(month)), sp ? h('strong', {}, money(sp.amount)) : h('span', {}, '')]),
   ];
   if (!txs.length) body.push(emptyNote(t('tx.none')));
-  txs.forEach(x => {
-    const credit = x.amount < 0;
-    body.push(h('div', { class: 'tx-row' }, [
-      h('div', { class: 'tx-date' }, (x.date || '').slice(0, 5)),
-      h('div', { class: 'tx-desc' }, x.desc || ''),
-      h('div', { class: 'tx-amt' + (credit ? ' credit' : '') }, (credit ? '+' : '') + money(Math.abs(x.amount))),
-    ]));
-  });
+  txs.forEach(x => body.push(txRow(x)));
   openModal(card.name, body);
+}
+
+// One transaction row: swipe left to reveal a delete action (opens the void/reimburse choice).
+function txRow(x) {
+  const credit = x.amount < 0;
+  const row = h('div', { class: 'tx-row' }, [
+    h('div', { class: 'tx-date' }, (x.date || '').slice(0, 5)),
+    h('div', { class: 'tx-desc' }, (x.reimbursed ? '🔁 ' : '') + (x.desc || '')),
+    h('div', { class: 'tx-amt' + (credit ? ' credit' : '') }, (credit ? '+' : '') + money(Math.abs(x.amount))),
+  ]);
+  const delBtn = h('button', { class: 'tx-del-btn', onclick: () => showTxOptions(x) }, t('common.delete'));
+  const wrap = h('div', { class: 'tx-row-wrap' }, [h('div', { class: 'tx-row-actions' }, [delBtn]), row]);
+  attachSwipeDelete(row, wrap);
+  return wrap;
+}
+
+// Swipe-to-reveal: drag the row left to expose the delete action underneath it.
+// Only one row stays open at a time; a tap on the still-closed row does nothing.
+let _swipeOpenRow = null;
+const SWIPE_REVEAL = 76;
+function attachSwipeDelete(row) {
+  let startX = 0, startY = 0, dx = 0, axis = null, dragging = false, open = false;
+  const setX = (px, animate) => {
+    row.style.transition = animate ? 'transform .18s ease' : 'none';
+    row.style.transform = `translateX(${px}px)`;
+  };
+  row.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (_swipeOpenRow && _swipeOpenRow !== row) _swipeOpenRow._closeSwipe();
+    dragging = true; axis = null; startX = e.clientX; startY = e.clientY; dx = 0;
+    row.setPointerCapture(e.pointerId);
+  });
+  row.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rdx = e.clientX - startX, rdy = e.clientY - startY;
+    if (axis === null) {
+      if (Math.abs(rdx) < 6 && Math.abs(rdy) < 6) return;
+      axis = Math.abs(rdx) > Math.abs(rdy) ? 'x' : 'y';
+    }
+    if (axis !== 'x') return;
+    e.preventDefault();
+    dx = Math.max(-SWIPE_REVEAL, Math.min(0, (open ? -SWIPE_REVEAL : 0) + rdx));
+    setX(dx, false);
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (axis === 'x') {
+      open = dx < -SWIPE_REVEAL / 2;
+      setX(open ? -SWIPE_REVEAL : 0, true);
+      _swipeOpenRow = open ? row : (_swipeOpenRow === row ? null : _swipeOpenRow);
+    }
+    axis = null;
+  };
+  row.addEventListener('pointerup', end);
+  row.addEventListener('pointercancel', end);
+  row._closeSwipe = () => { open = false; setX(0, true); };
+}
+
+// Before deleting a transaction, ask which situation applies — the two behave differently:
+// - voided with the bank: remove the item and reduce the card's amount to pay
+// - someone else covers this charge: keep it counted toward the card's amount to pay
+//   (the bank still bills you), but drop it out of your own spending totals
+function showTxOptions(x) {
+  const body = [
+    h('div', { class: 'row' }, [
+      h('div', { class: 'row-main' }, [
+        h('div', { class: 'row-title' }, x.desc || ''),
+        h('div', { class: 'row-sub' }, (x.date || '') + ' · ' + money(Math.abs(x.amount))),
+      ]),
+    ]),
+    h('button', { class: 'btn danger block', style: 'margin-top:14px', onclick: () => voidTx(x) },
+      '🗑 ' + t('tx.void')),
+    h('div', { class: 'muted small mb' }, t('tx.voidHint')),
+    h('button', { class: 'btn block', style: 'margin-top:14px', onclick: () => setTxReimbursed(x, true) },
+      '🔁 ' + t('tx.reimburse')),
+    h('div', { class: 'muted small mb' }, t('tx.reimburseHint')),
+  ];
+  if (x.reimbursed) {
+    body.push(h('button', { class: 'btn block', style: 'margin-top:14px', onclick: () => setTxReimbursed(x, false) },
+      '↺ ' + t('tx.unmark')));
+  }
+  openModal(t('tx.optionsTitle'), body);
+}
+
+async function voidTx(x) {
+  const sp = State.spending.find(s => s.cardId === x.cardId && s.month === x.month);
+  if (sp) { sp.amount = Math.max(0, Math.round(((sp.amount || 0) - x.amount) * 100) / 100); await DB.spending.save(sp); }
+  await DB.transactions.remove(x.id);
+  await refresh();
+  closeModal();
+  await rerender();
+  toast('✓ ' + t('tx.voided'));
+}
+
+async function setTxReimbursed(x, val) {
+  x.reimbursed = val;
+  await DB.transactions.save(x);
+  await refresh();
+  closeModal();
+  await rerender();
+  toast('✓');
 }
 
 function showQR(c) {

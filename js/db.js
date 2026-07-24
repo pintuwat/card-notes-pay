@@ -71,6 +71,8 @@ const DB = (() => {
   };
   const transactions = {
     all: () => getAll('transactions'),
+    save: (x) => x.id ? put('transactions', x) : add('transactions', x),
+    remove: (id) => del('transactions', id),
     forCard: async (cardId) => (await getAll('transactions')).filter(t => t.cardId === cardId),
   };
   const meta = {
