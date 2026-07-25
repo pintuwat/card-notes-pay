@@ -31,8 +31,10 @@ PORT = int(CFG.get("port", 8787))
 DOB = CFG["dob"]
 SINCE = CFG.get("since", "2026/01/01")
 DOWNLOAD = Path(os.path.expanduser("~/Downloads/cardpay-mydata.json"))
+ANNOTATIONS = HERE / "annotations.json"
 
 _lock = threading.Lock()
+_annot_lock = threading.Lock()
 
 
 STATEMENTS = HERE / "statements"
@@ -40,6 +42,54 @@ STATEMENTS = HERE / "statements"
 
 def is_first_sync():
     return not (STATEMENTS / "_emails.json").exists()
+
+
+def load_annotations():
+    if ANNOTATIONS.exists():
+        try:
+            return json.loads(ANNOTATIONS.read_text())
+        except Exception:
+            pass
+    return {"voided": [], "reimbursed": []}
+
+
+def save_annotations(data):
+    with _annot_lock:
+        ANNOTATIONS.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _tx_sig(card_name, month, date, desc, amount):
+    return f"{card_name or ''}|{month or ''}|{date or ''}|{desc or ''}|{round((amount or 0) * 100)}"
+
+
+def apply_annotations(payload):
+    """Drop voided transactions (and their amount) and re-apply reimbursed marks, so
+    every device syncing through this Mac sees the same marks — not just whichever
+    browser made them. Any device can persist marks here via POST /api/annotations."""
+    ann = load_annotations()
+    voided_sigs = {v["sig"] for v in ann.get("voided", [])}
+    reimbursed_sigs = {r["sig"] for r in ann.get("reimbursed", [])}
+    if not voided_sigs and not reimbursed_sigs:
+        return payload
+    cards_by_id = {c["id"]: c["name"] for c in payload.get("cards", [])}
+    voided_by_card_month = {}
+    kept = []
+    for x in payload.get("transactions", []):
+        name = cards_by_id.get(x["cardId"])
+        sig = _tx_sig(name, x["month"], x.get("date"), x.get("desc"), x["amount"])
+        if sig in voided_sigs:
+            key = (x["cardId"], x["month"])
+            voided_by_card_month[key] = voided_by_card_month.get(key, 0) + (x["amount"] or 0)
+            continue
+        if sig in reimbursed_sigs:
+            x = dict(x, reimbursed=True)
+        kept.append(x)
+    payload["transactions"] = kept
+    for s in payload.get("spending", []):
+        key = (s["cardId"], s["month"])
+        if key in voided_by_card_month:
+            s["amount"] = round(max(0, s["amount"] - voided_by_card_month[key]), 2)
+    return payload
 
 
 def _gist_request(method, url, token, body=None):
@@ -112,7 +162,9 @@ def run_sync():
                            cwd=HERE, env=env, capture_output=True, text=True, timeout=120)
         if p.returncode != 0:
             return False, (p.stdout + p.stderr)[-500:]
-        return True, json.loads(DOWNLOAD.read_text())
+        payload = apply_annotations(json.loads(DOWNLOAD.read_text()))
+        DOWNLOAD.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        return True, payload
     except subprocess.TimeoutExpired:
         return False, "Timed out talking to Gmail."
     except Exception as e:
@@ -167,8 +219,11 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(204); self._cors(); self.end_headers()
 
     def do_POST(self):
-        if self.path.rstrip("/") == "/api/sync":
+        p = self.path.rstrip("/")
+        if p == "/api/sync":
             return self.handle_sync()
+        if p == "/api/annotations":
+            return self.handle_save_annotations()
         self.send_error(404)
 
     def do_GET(self):
@@ -177,7 +232,18 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"ok": True, "service": "cardpay-sync"})
         if p == "/api/sync":
             return self.handle_sync()
+        if p == "/api/annotations":
+            return self._json(200, load_annotations())
         return super().do_GET()
+
+    def handle_save_annotations(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length))
+        except Exception as e:
+            return self._json(400, {"ok": False, "error": str(e)})
+        save_annotations({"voided": data.get("voided", []), "reimbursed": data.get("reimbursed", [])})
+        self._json(200, {"ok": True})
 
     def handle_sync(self):
         if not _lock.acquire(blocking=False):

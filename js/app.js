@@ -682,13 +682,21 @@ function showTxOptions(x) {
 }
 
 async function voidTx(x) {
+  const card = cardById(x.cardId);
   const sp = State.spending.find(s => s.cardId === x.cardId && s.month === x.month);
   if (sp) { sp.amount = Math.max(0, Math.round(((sp.amount || 0) - x.amount) * 100) / 100); await DB.spending.save(sp); }
+  // Record it so the next re-sync (which rebuilds transactions from the statement PDFs,
+  // where this line item still exists) drops it again instead of bringing it back.
+  const rec = await DB.meta.get('voidedTx');
+  const voided = (rec && rec.value) || [];
+  voided.push({ sig: DB.txSig(card && card.name, x), cardName: card && card.name, month: x.month, amount: x.amount });
+  await DB.meta.set('voidedTx', voided);
   await DB.transactions.remove(x.id);
   await refresh();
   closeModal();
   await rerender();
   toast('✓ ' + t('tx.voided'));
+  pushAnnotations();
 }
 
 async function setTxReimbursed(x, val) {
@@ -698,6 +706,25 @@ async function setTxReimbursed(x, val) {
   closeModal();
   await rerender();
   toast('✓');
+  pushAnnotations();
+}
+
+// Best-effort: hand the current voided/reimbursed marks to the local sync server so any
+// device syncing through this Mac (e.g. your phone) sees the same marks — not just this
+// browser. syncUrl() resolves to a relative path when no server override is set in
+// Settings, which still works when this page is itself being served by the sync server.
+// Silently does nothing if there's no server to reach (e.g. the public github.io app).
+async function pushAnnotations() {
+  try {
+    const rec = await DB.meta.get('voidedTx');
+    const voided = (rec && rec.value) || [];
+    const reimbursed = State.transactions.filter(x => x.reimbursed)
+      .map(x => ({ sig: DB.txSig(cardById(x.cardId)?.name, x) }));
+    await fetchTimeout(syncUrl('api/annotations'), 4000, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voided, reimbursed }),
+    });
+  } catch (_) { /* offline or no server — local marks still saved, will retry via next sync push */ }
 }
 
 function showQR(c) {

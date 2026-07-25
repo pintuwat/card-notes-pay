@@ -7,4 +7,5 @@ statements/
 *.PDF
 *backup*.json
 cardpay-mydata.json
+annotations.json
 __pycache__/

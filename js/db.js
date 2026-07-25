@@ -92,35 +92,72 @@ const DB = (() => {
     };
   }
 
+  // Stable identity for a transaction line-item, independent of its (re-assigned-every-
+  // parse) numeric id — used to re-find a voided/reimbursed transaction after a re-sync
+  // regenerates the whole transactions list from the statement PDFs.
+  function txSig(cardName, x) {
+    return `${cardName || ''}|${x.month || ''}|${x.date || ''}|${x.desc || ''}|${Math.round((x.amount || 0) * 100)}`;
+  }
+
   const STORES = ['cards', 'spending', 'transactions', 'income', 'installments', 'meta'];
   async function importAll(data) {
-    // Preserve paid status before wiping spending.
-    // Match by cardName+month (robust against cardId shifts on re-sync).
+    // Preserve paid status, and voided/reimbursed transaction marks, before wiping.
+    // Match by cardName (+month/date/desc/amount for tx) — robust against cardId/tx-id
+    // shifts on re-sync, since every sync rebuilds cards/spending/transactions from scratch.
     const oldCards = await getAll('cards');
     const oldSpending = await getAll('spending');
+    const oldTransactions = await getAll('transactions');
     const cardNameById = Object.fromEntries(oldCards.map(c => [c.id, c.name]));
     const paidMap = {};
     for (const s of oldSpending) {
       if (s.paid) paidMap[`${cardNameById[s.cardId]}|${s.month}`] = s.paidDate || null;
     }
+    const reimbursedSigs = new Set();
+    for (const x of oldTransactions) {
+      if (x.reimbursed) reimbursedSigs.add(txSig(cardNameById[x.cardId], x));
+    }
+    const voidedRec = await get('meta', 'voidedTx');
+    const voided = (voidedRec && voidedRec.value) || [];
+    const voidedSigs = new Set(voided.map(v => v.sig));
+    const voidedByCardMonth = {};
+    for (const v of voided) {
+      const key = `${v.cardName}|${v.month}`;
+      voidedByCardMonth[key] = (voidedByCardMonth[key] || 0) + (v.amount || 0);
+    }
 
-    // Cards, spending, transactions, meta: full replace
-    for (const store of ['cards', 'spending', 'transactions', 'meta']) {
+    // Cards, spending, transactions: full replace. Meta is handled separately below —
+    // the Mac sync payload never includes meta, so blanket-clearing it here would wipe
+    // app state (seeded flag, this very voided-tx list) on every single sync.
+    for (const store of ['cards', 'spending', 'transactions']) {
       await clear(store);
       for (const row of (data[store] || [])) await put(store, row);
     }
+    if (data.meta && data.meta.length > 0) {
+      await clear('meta');
+      for (const row of data.meta) await put('meta', row);
+    }
 
-    // Restore paid status — sync data always has paid=false for current months
     const newCards = await getAll('cards');
     const cardNameByNewId = Object.fromEntries(newCards.map(c => [c.id, c.name]));
+
+    // Drop voided transactions back out (the fresh parse always includes them again,
+    // since the bank's PDF itself never changes) and restore reimbursed marks.
+    for (const x of await getAll('transactions')) {
+      const name = cardNameByNewId[x.cardId];
+      const sig = txSig(name, x);
+      if (voidedSigs.has(sig)) { await del('transactions', x.id); continue; }
+      if (reimbursedSigs.has(sig) && !x.reimbursed) { x.reimbursed = true; await put('transactions', x); }
+    }
+
+    // Restore paid status, and re-apply voided amounts to the card-month total —
+    // sync data always has paid=false and the un-reduced statement amount.
     const newSpending = await getAll('spending');
     for (const s of newSpending) {
       const key = `${cardNameByNewId[s.cardId]}|${s.month}`;
-      if (!s.paid && paidMap.hasOwnProperty(key)) {
-        s.paid = true;
-        s.paidDate = paidMap[key];
-        await put('spending', s);
-      }
+      let changed = false;
+      if (!s.paid && paidMap.hasOwnProperty(key)) { s.paid = true; s.paidDate = paidMap[key]; changed = true; }
+      if (voidedByCardMonth[key]) { s.amount = Math.max(0, Math.round((s.amount - voidedByCardMonth[key]) * 100) / 100); changed = true; }
+      if (changed) await put('spending', s);
     }
     // Income: only overwrite if incoming data has records
     // (Mac sync always sends income:[] — preserve manually-entered income)
@@ -152,5 +189,5 @@ const DB = (() => {
     for (const store of STORES) await clear(store);
   }
 
-  return { open, cards, spending, transactions, income, installments, meta, exportAll, importAll, wipe, getAll, clear };
+  return { open, cards, spending, transactions, income, installments, meta, exportAll, importAll, wipe, getAll, clear, txSig };
 })();
