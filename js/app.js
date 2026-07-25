@@ -526,6 +526,23 @@ Screens.settings = async () => {
   const fileIn = h('input', { type: 'file', accept: 'application/json', style: 'display:none', onchange: importData });
   wrap.append(h('button', { class: 'btn block', onclick: () => fileIn.click() }, '⬆ ' + t('settings.import')));
   wrap.append(fileIn);
+  // voided transactions — the only way to undo a void, since the row itself
+  // is deleted and no longer has a swipe target to unmark from
+  const voidedRec = await DB.meta.get('voidedTx');
+  const voidedList = (voidedRec && voidedRec.value) || [];
+  if (voidedList.length) {
+    wrap.append(sectionTitle(t('settings.voided')));
+    wrap.append(h('div', { class: 'muted small mb' }, t('settings.voidedDesc')));
+    voidedList.slice().reverse().forEach(v => {
+      wrap.append(h('div', { class: 'row' }, [
+        h('div', { class: 'row-main' }, [
+          h('div', { class: 'row-title' }, (v.sig || '').split('|')[3] || v.cardName || ''),
+          h('div', { class: 'row-sub' }, `${v.cardName || ''} · ${ymLabel(v.month)} · ${money(v.amount)}`),
+        ]),
+        h('button', { class: 'btn small', onclick: () => restoreVoidedTx(v) }, '↺ ' + t('tx.restore')),
+      ]));
+    });
+  }
   // danger
   wrap.append(sectionTitle(t('settings.danger')));
   wrap.append(h('div', { class: 'muted small mb' }, t('settings.dangerDesc')));
@@ -696,6 +713,23 @@ async function voidTx(x) {
   closeModal();
   await rerender();
   toast('✓ ' + t('tx.voided'));
+  pushAnnotations();
+}
+
+// Undo a void. The transaction row itself was deleted, so it can only fully come back
+// via the next sync (which re-parses it from the statement PDF) — but the amount to pay
+// is restored immediately so the card total is correct even before that next sync.
+async function restoreVoidedTx(v) {
+  const rec = await DB.meta.get('voidedTx');
+  const list = (rec && rec.value) || [];
+  const next = list.filter(x => x.sig !== v.sig);
+  await DB.meta.set('voidedTx', next);
+  const card = State.cards.find(c => c.name === v.cardName);
+  const sp = card && State.spending.find(s => s.cardId === card.id && s.month === v.month);
+  if (sp) { sp.amount = Math.round(((sp.amount || 0) + v.amount) * 100) / 100; await DB.spending.save(sp); }
+  await refresh();
+  await rerender();
+  toast('✓ ' + t('tx.restored'));
   pushAnnotations();
 }
 
