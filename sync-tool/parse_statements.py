@@ -54,7 +54,10 @@ def fix_thai(s):
 
 DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{2}$")
 AMT_RE = re.compile(r"^-?[\d,]+\.\d{2}$")
-UOB_TX = re.compile(r"^(\d{2} [A-Z]{3}) (\d{2} [A-Z]{3}) (.+?) ([\d,]+\.\d{2})(?: [\d,]+\.\d{2})?( CR)?$", re.MULTILINE)
+# Foreign-currency lines add a "CCY amount" pair before the real THB charge, e.g.
+# "... BELCONNEN AUD 202.80 4,819.02" — the THB amount is always the LAST number on the
+# line, so the optional foreign-currency pair is consumed but not captured.
+UOB_TX = re.compile(r"^(\d{2} [A-Z]{3}) (\d{2} [A-Z]{3}) (.+?)(?: [A-Z]{3} [\d,]+\.\d{2})? ([\d,]+\.\d{2})( CR)?$", re.MULTILINE)
 
 
 def read_fitz_lines(path, pw):
