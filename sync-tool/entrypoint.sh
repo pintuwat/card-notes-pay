@@ -42,5 +42,6 @@ EOF
 ln -sf /data/statements statements
 ln -sf /data/annotations.json annotations.json
 ln -sf /data/token.json token.json
+ln -sf /data/state.json state.json
 
 exec python3 sync_server.py

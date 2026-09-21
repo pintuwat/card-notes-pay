@@ -32,12 +32,31 @@ DOB = CFG["dob"]
 SINCE = CFG.get("since", "2026/01/01")
 DOWNLOAD = Path(os.path.expanduser("~/Downloads/cardpay-mydata.json"))
 ANNOTATIONS = HERE / "annotations.json"
+STATE = HERE / "state.json"
 
 _lock = threading.Lock()
 _annot_lock = threading.Lock()
+_state_lock = threading.Lock()
 
 
 STATEMENTS = HERE / "statements"
+
+
+def load_state():
+    """The shared app database: whichever device wrote last, via POST /api/state.
+    Lets every device converge on the same cards/spending/installments/etc.,
+    not just the Gmail-derived data that /api/sync covers."""
+    if STATE.exists():
+        try:
+            return json.loads(STATE.read_text())
+        except Exception:
+            pass
+    return None
+
+
+def save_state(data):
+    with _state_lock:
+        STATE.write_text(json.dumps(data, ensure_ascii=False))
 
 
 def is_first_sync():
@@ -228,6 +247,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.handle_sync()
         if p == "/api/annotations":
             return self.handle_save_annotations()
+        if p == "/api/state":
+            return self.handle_save_state()
         self.send_error(404)
 
     def do_GET(self):
@@ -238,7 +259,21 @@ class Handler(SimpleHTTPRequestHandler):
             return self.handle_sync()
         if p == "/api/annotations":
             return self._json(200, load_annotations())
+        if p == "/api/state":
+            state = load_state()
+            if state is None:
+                return self._json(404, {"ok": False, "error": "no shared state saved yet"})
+            return self._json(200, state)
         return super().do_GET()
+
+    def handle_save_state(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length))
+        except Exception as e:
+            return self._json(400, {"ok": False, "error": str(e)})
+        save_state(data)
+        self._json(200, {"ok": True})
 
     def handle_save_annotations(self):
         try:

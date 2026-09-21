@@ -260,6 +260,36 @@ const syncBase = () => (localStorage.getItem('syncUrl') || '').trim().replace(/\
 const syncUrl = (path) => { const b = syncBase(); return b ? b + '/' + path : path; };
 const cloudDataUrl = () => (localStorage.getItem('cloudDataUrl') || '').trim();
 
+// Shared database: the server keeps one JSON snapshot (/api/state) that every
+// device reading through it converges on, so a card added on one phone shows up
+// on another — not just the Gmail-derived numbers /api/sync covers. Push after
+// every local write (rerender() already runs after all of them — see below),
+// pull once on boot before first paint. Best-effort: offline devices keep
+// working from IndexedDB alone and just push their edits next time they're online.
+let _statePushTimer = null;
+function scheduleStatePush() {
+  clearTimeout(_statePushTimer);
+  _statePushTimer = setTimeout(pushState, 1200);
+}
+async function pushState() {
+  try {
+    const data = await DB.exportAll();
+    await fetchTimeout(syncUrl('api/state'), 8000, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+  } catch (_) { /* offline or no server — local write already saved */ }
+}
+async function pullState() {
+  try {
+    const resp = await fetchTimeout(syncUrl('api/state'), 6000);
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    if (!data || data.ok === false) return false;
+    await DB.importAll(data);
+    return true;
+  } catch (_) { return false; }
+}
+
 async function triggerSync() {
   let server = false;
   try { server = (await fetchTimeout(syncUrl('api/ping'), 2500)).ok; } catch (_) {}
@@ -1044,6 +1074,7 @@ async function rerender(screen) {
   const savedScroll = isNavigation ? 0 : view.scrollTop;
   if (screen) State.screen = screen;
   await refresh();
+  scheduleStatePush();
   applyStaticI18n();
   $('#screenTitle').textContent = State.screen === 'cardDetail'
     ? (cardById(State.detailCardId)?.name || t('tx.title'))
@@ -1087,6 +1118,7 @@ async function boot() {
   await DB.open();
   await seedIfNeeded();
   await runMigrations();
+  await pullState(); // adopt the shared cloud database, if any, before first paint
   $$('#tabbar .tab').forEach(b => b.addEventListener('click', () => {
     if (b.id === 'syncTab') return triggerSync();
     go(b.dataset.screen);
