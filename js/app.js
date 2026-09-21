@@ -273,7 +273,7 @@ async function autoSync() {
     h('div', { class: 'sync-loading' }, [h('div', { class: 'spinner' }), h('div', { class: 'muted' }, t('sync.reading'))]),
   ]);
   try {
-    const resp = await fetchTimeout(syncUrl('api/sync'), 190000, { method: 'POST' });
+    const resp = await fetchTimeout(syncUrl('api/sync'), 620000, { method: 'POST' });
     const data = await resp.json();
     if (!resp.ok || data.ok === false) throw new Error((data && data.error) || 'sync failed');
     await DB.importAll(data);

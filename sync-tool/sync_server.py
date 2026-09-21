@@ -153,20 +153,24 @@ def run_sync():
     since = SINCE if first else datetime.now().strftime("%Y/%m/01")
     print(f"[sync] mode={'FULL (first run)' if first else 'current month'} since={since}")
     try:
-        f = subprocess.run([sys.executable, str(HERE / "fetch_statements.py"),
-                            "--since", since], cwd=HERE, env=env,
-                           capture_output=True, text=True, timeout=180)
+        try:
+            f = subprocess.run([sys.executable, str(HERE / "fetch_statements.py"),
+                                "--since", since], cwd=HERE, env=env,
+                               capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            return False, "Timed out fetching from Gmail (fetch_statements.py > 300s)."
         if f.returncode != 0:
             return False, (f.stdout + f.stderr)[-500:]
-        p = subprocess.run([sys.executable, str(HERE / "parse_statements.py")],
-                           cwd=HERE, env=env, capture_output=True, text=True, timeout=120)
+        try:
+            p = subprocess.run([sys.executable, str(HERE / "parse_statements.py")],
+                               cwd=HERE, env=env, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            return False, "Timed out parsing statement PDFs (parse_statements.py > 300s) — likely too slow for this server's CPU on the full accumulated statement set."
         if p.returncode != 0:
             return False, (p.stdout + p.stderr)[-500:]
         payload = apply_annotations(json.loads(DOWNLOAD.read_text()))
         DOWNLOAD.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         return True, payload
-    except subprocess.TimeoutExpired:
-        return False, "Timed out talking to Gmail."
     except Exception as e:
         return False, str(e)
 
