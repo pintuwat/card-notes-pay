@@ -506,43 +506,6 @@ Screens.settings = async () => {
     segBtn('ไทย', LANG === 'th', () => switchLang('th')),
     segBtn('English', LANG === 'en', () => switchLang('en')),
   ]));
-  // sync server
-  wrap.append(sectionTitle(t('settings.sync')));
-  wrap.append(h('div', { class: 'muted small mb' }, t('settings.syncDesc')));
-  const syncInput = h('input', { class: 'input', type: 'url', inputmode: 'url', autocapitalize: 'off',
-    autocorrect: 'off', spellcheck: 'false', placeholder: 'http://MacbookAir.local:8787',
-    value: localStorage.getItem('syncUrl') || '' });
-  wrap.append(syncInput);
-  wrap.append(h('div', { class: 'two-col', style: 'margin-top:10px' }, [
-    h('button', { class: 'btn primary', onclick: async () => {
-      const v = syncInput.value.trim().replace(/\/+$/, '');
-      if (v) localStorage.setItem('syncUrl', v); else localStorage.removeItem('syncUrl');
-      // quick reachability check
-      try {
-        const ok = (await fetchTimeout(syncUrl('api/ping'), 3000)).ok;
-        toast(ok ? '✓ ' + t('settings.syncOk') : '⚠ ' + t('settings.syncBad'));
-      } catch (_) { toast('⚠ ' + t('settings.syncBad')); }
-    } }, t('common.save')),
-    h('button', { class: 'btn', onclick: () => { localStorage.removeItem('syncUrl'); syncInput.value = ''; toast('✓'); } }, t('settings.syncClear')),
-  ]));
-
-  // cloud data URL (for iPhone — fetches pre-built JSON from GitHub or any HTTPS URL)
-  wrap.append(sectionTitle(t('settings.cloud')));
-  wrap.append(h('div', { class: 'muted small mb' }, t('settings.cloudDesc')));
-  const cloudInput = h('input', { class: 'input', type: 'url', inputmode: 'url', autocapitalize: 'off',
-    autocorrect: 'off', spellcheck: 'false',
-    placeholder: 'https://raw.githubusercontent.com/…/data.json',
-    value: localStorage.getItem('cloudDataUrl') || '' });
-  wrap.append(cloudInput);
-  wrap.append(h('div', { class: 'two-col', style: 'margin-top:10px' }, [
-    h('button', { class: 'btn primary', onclick: () => {
-      const v = cloudInput.value.trim();
-      if (v) localStorage.setItem('cloudDataUrl', v); else localStorage.removeItem('cloudDataUrl');
-      toast('✓');
-    }}, t('common.save')),
-    h('button', { class: 'btn', onclick: () => { localStorage.removeItem('cloudDataUrl'); cloudInput.value = ''; toast('✓'); } }, t('settings.syncClear')),
-  ]));
-
   // backup
   wrap.append(sectionTitle(t('settings.backup')));
   wrap.append(h('div', { class: 'muted small mb' }, t('settings.exportXlsxDesc')));
@@ -1099,18 +1062,22 @@ function applyStaticI18n() {
 async function switchLang(l) { setLang(l); await rerender(); }
 
 // One-time data migrations for installs that were seeded before a rule changed.
-async function runMigrations() {
-  const m = await DB.meta.get('paidThrough2026-05');
+async function markPaidThrough(monthKey, metaKey) {
+  const m = await DB.meta.get(metaKey);
   if (m && m.value) return;
   const all = await DB.spending.all();
   for (const s of all) {
-    if (s.month <= '2026-05' && !s.paid) {
+    if (s.month <= monthKey && !s.paid) {
       s.paid = true;
       s.paidDate = s.paidDate || `${s.month}-28T00:00:00.000Z`;
       await DB.spending.save(s);
     }
   }
-  await DB.meta.set('paidThrough2026-05', true);
+  await DB.meta.set(metaKey, true);
+}
+async function runMigrations() {
+  await markPaidThrough('2026-05', 'paidThrough2026-05');
+  await markPaidThrough('2026-07', 'paidThrough2026-07');
 }
 
 // ---------- boot ----------
