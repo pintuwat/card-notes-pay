@@ -137,7 +137,9 @@ Screens.home = async () => {
   const loanLoad = activeInst.filter(i => Number(i.totalMonths) >= 36).reduce((a, i) => a + computeInstallment(i).perMonth, 0);
   const instLoad = activeInst.filter(i => Number(i.totalMonths) < 36).reduce((a, i) => a + computeInstallment(i).perMonth, 0);
   const totalCommit = totalSpend - instLoad;
-  const netFree = income - unpaid - loanLoad;
+  // Income minus everything committed this month — independent of whether bills have
+  // been marked "paid" yet, since that checkbox tracks bank due-dates, not cash flow.
+  const netFree = income - totalSpend - instLoad - loanLoad;
 
   const wrap = h('div', { class: 'screen' });
   wrap.append(monthPicker());
