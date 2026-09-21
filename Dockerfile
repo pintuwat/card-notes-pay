@@ -4,6 +4,10 @@
 # same domain, same paths, the app's Sync button just starts working.
 FROM python:3.11-slim
 
+# Unbuffered stdout so print() shows up in Coolify's logs immediately
+# instead of sitting in Python's buffer until the process exits.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 COPY sync-tool/requirements.txt sync-tool/requirements.txt
 RUN pip install --no-cache-dir -r sync-tool/requirements.txt \
