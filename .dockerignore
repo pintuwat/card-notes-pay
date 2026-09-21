@@ -1,0 +1,12 @@
+.git
+.DS_Store
+.claude
+sync-tool/_to_delete
+sync-tool/credentials.json
+sync-tool/token.json
+sync-tool/config.json
+sync-tool/annotations.json
+sync-tool/statements
+sync-tool/__pycache__
+sync-tool/cardpay-mydata.json
+*backup*.json

@@ -1,7 +1,9 @@
 # Gmail statement fetcher — setup (one time, ~5 min)
 
-This reads `intuwat.fin@gmail.com` **on your Mac only**. Nothing is uploaded.
-You create an OAuth credential once; after that it's just `python3 fetch_statements.py`.
+This reads `intuwat.fin@gmail.com` read-only, via a Gmail API OAuth credential you
+create once. The login step needs a real browser, so it's done here on your Mac —
+after that, the credential and resulting token move to the cloud server (step 5) and
+nothing further needs to run on the Mac.
 
 ## 1. Create the OAuth credential in Google Cloud Console
 
@@ -56,3 +58,18 @@ Then tell me what it printed and I'll build the per-bank transaction parser.
 - Read-only scope: the script can only **read** mail, never send or delete.
 - `.gitignore` here blocks `credentials.json`, `token.json`, and `statements/`
   from ever being committed.
+
+## 5. Move it to the cloud (one time)
+
+The sync server now runs 24/7 in a Coolify-deployed container, not on your Mac — see
+`README.md`'s "Runs 24/7 in the cloud" section. Once `token.json` exists from step 4
+above:
+
+1. `cat credentials.json` and `cat token.json` on your Mac.
+2. Paste their contents into the Coolify app's environment variables as
+   `GOOGLE_CREDENTIALS_JSON` and `GOOGLE_TOKEN_JSON`.
+3. Set `CARDPAY_DOB` to your birthdate (`DD/MM/YYYY`).
+4. Redeploy. The app's **🔄 Sync** button now hits that server directly, anytime.
+
+If the Gmail token ever expires or gets revoked, redo step 4 locally to get a fresh
+`token.json`, then update `GOOGLE_TOKEN_JSON` in Coolify and redeploy.

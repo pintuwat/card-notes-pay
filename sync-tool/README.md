@@ -1,41 +1,47 @@
 # Cardpay Gmail Sync
 
 Reads your credit-card e-statement emails from Gmail, unlocks the password-protected
-PDFs, extracts each card's **Total Payment Due** per month, and writes an import file
-for the **Card Notes & Pay** app. Runs entirely on your Mac — nothing is uploaded.
+PDFs, extracts each card's **Total Payment Due** per month, and feeds it to the
+**Card Notes & Pay** app.
 
-## One-time setup
-See **SETUP.md** (create a Google OAuth credential, save `credentials.json` here,
-`pip3 install -r requirements.txt`).
+## Runs 24/7 in the cloud
 
-## Best: one-tap Sync from inside the app
-One command does both — fetches the latest statements from Gmail **and** starts
-serving the app:
+This now runs as part of the same container that serves the app itself (see the
+repo-root `Dockerfile`, deployed via Coolify). Tapping **🔄 Sync** in the app hits
+`/api/sync` on that same server anytime, day or night — no Mac needs to be on.
+
+- `sync_server.py` serves the static app **and** `/api/sync`, `/api/ping`,
+  `/api/annotations` from one process — exactly like it does when run locally.
+- `entrypoint.sh` builds `credentials.json`/`config.json` from environment variables
+  set in the Coolify dashboard (never committed to git), and keeps `statements/`,
+  `annotations.json`, and `token.json` on a persistent `/data` volume so cached
+  statements, void/reimburse marks, and the Gmail refresh token survive redeploys.
+
+To rotate a secret (new Gmail token, changed birthdate, etc.), update the relevant
+env var in Coolify and redeploy — see the repo-root `Dockerfile` and this folder's
+`entrypoint.sh` for exactly which variables it reads
+(`CARDPAY_DOB`, `CARDPAY_SINCE`, `GOOGLE_CREDENTIALS_JSON`, `GOOGLE_TOKEN_JSON`,
+`GITHUB_PUSH_ENABLED`/`GITHUB_PUSH_TOKEN`/`GITHUB_GIST_ID`).
+
+## One-time setup (before the first cloud deploy)
+
+Gmail's OAuth login needs a real browser, so `credentials.json` and `token.json`
+are generated once on your Mac and their contents pasted into Coolify as env vars.
+See **SETUP.md** for creating the Google OAuth credential; once `token.json` exists
+locally, copy both files' contents into Coolify (`GOOGLE_CREDENTIALS_JSON` /
+`GOOGLE_TOKEN_JSON`) rather than running anything long-term on the Mac.
+
+## Running/debugging locally (optional)
+
+The same server still runs locally for testing, exactly as before:
 ```
 python3 sync_server.py
 ```
-It prints URLs — **open the app from one of them** (not the github.io URL):
-- on this Mac: `http://localhost:8787`
-- on your phone (same Wi-Fi): `http://<your-mac-name>.local:8787` (e.g. `http://MacbookAir.local:8787`)
+Then open `http://localhost:8787`. Needs `credentials.json`, `token.json`, and
+`config.json` present in this folder (see SETUP.md) — these are gitignored and
+never committed.
 
-The first thing it does on startup is read Gmail and parse the latest
-statements in the background while it starts serving, so opening the app
-right after already has fresh data. Tap **🔄 Sync** anytime after that for
-another refresh. Your birthdate (for the PDF passwords) lives in `config.json`
-on this Mac.
-
-### Important: the public github.io app can't auto-sync
-The hosted app is **HTTPS**; this server is **HTTP**. Browsers (especially iOS)
-**block HTTPS pages from calling HTTP servers**, so on the github.io app Sync
-falls back to file import. For one-tap sync **on your phone**, add the
-`….local:8787` URL above to your Home Screen and use *that* app.
-
-> Want sync on the public app from anywhere? Put the server behind an HTTPS
-> tunnel (e.g. `cloudflared`) and paste that https URL into the app under
-> **⚙ Settings → Sync server** (add a secret token first — an open tunnel would
-> expose your data).
-
-## Or: command-line (produces a file to import)
+### Or: one-off command line (produces a file to import)
 ```
 ./sync.sh
 ```
@@ -75,5 +81,8 @@ from one date (`CARDPAY_DOB`):
 ## Security
 - `.gitignore` blocks `credentials.json`, `token.json`, `statements/`, and `*.json`
   from being committed. This folder is **not** part of the public app repo.
+- In the cloud deployment, the same secrets live as environment variables in the
+  Coolify dashboard instead of as local files — they still never go into git or the
+  Docker image.
 - Gmail scope is **read-only**. Token can be revoked anytime at
   https://myaccount.google.com/permissions
