@@ -137,9 +137,11 @@ Screens.home = async () => {
   const loanLoad = activeInst.filter(i => Number(i.totalMonths) >= 36).reduce((a, i) => a + computeInstallment(i).perMonth, 0);
   const instLoad = activeInst.filter(i => Number(i.totalMonths) < 36).reduce((a, i) => a + computeInstallment(i).perMonth, 0);
   const totalCommit = totalSpend - instLoad;
-  // Income minus everything committed this month — independent of whether bills have
-  // been marked "paid" yet, since that checkbox tracks bank due-dates, not cash flow.
-  const netFree = income - totalSpend - instLoad - loanLoad;
+  // Income minus card spend and car loan this month — independent of whether bills
+  // have been marked "paid" yet, since that checkbox tracks bank due-dates, not cash
+  // flow. Short-term installments (instLoad) are already folded into totalSpend via
+  // the cards' statement amounts, so they aren't subtracted again here.
+  const netFree = income - totalSpend - loanLoad;
 
   const wrap = h('div', { class: 'screen' });
   wrap.append(monthPicker());
