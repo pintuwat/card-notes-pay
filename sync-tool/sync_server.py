@@ -220,9 +220,42 @@ def _startup_sync():
         _lock.release()
 
 
+# Static files the browser is allowed to load. APP_DIR also contains sync-tool/
+# (credentials, Gmail token, config with the birthdate, statement PDFs, state), so
+# serving the whole folder would publish secrets — only the app shell is served.
+_APP_ROOT = Path(APP_DIR).resolve()
+_STATIC_FILES = {_APP_ROOT / n for n in ("index.html", "manifest.webmanifest", "sw.js")}
+_STATIC_DIRS = tuple(_APP_ROOT / d for d in ("js", "css", "icons"))
+
+
+def is_public_static(fs_path: str) -> bool:
+    """True only for the app shell. Resolves symlinks and '..' first, so neither a
+    traversal nor a symlink (e.g. sync-tool/token.json -> /data) can escape."""
+    try:
+        p = Path(fs_path).resolve()
+    except (OSError, RuntimeError):
+        return False
+    if p == _APP_ROOT:  # "/" -> index.html
+        return True
+    if p in _STATIC_FILES:
+        return p.is_file()
+    return p.is_file() and any(p.is_relative_to(d) for d in _STATIC_DIRS)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=APP_DIR, **k)
+
+    def send_head(self):
+        # Used by both GET and HEAD for static files.
+        if not is_public_static(self.translate_path(self.path)):
+            self.send_error(404)
+            return None
+        return super().send_head()
+
+    def list_directory(self, path):
+        self.send_error(404)  # never expose folder listings
+        return None
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
