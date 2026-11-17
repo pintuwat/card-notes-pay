@@ -9,14 +9,17 @@ date itself is never stored.
 
 Usage:  CARDPAY_DOB=23/05/1996 python3 parse_statements.py
 """
-import os, re, json, glob, sys, base64
+import os, re, json, glob, sys, base64, hashlib
 from pathlib import Path
 from datetime import datetime
+import pypdf
 from pypdf import PdfReader
 
 HERE = Path(__file__).resolve().parent
 PDFS = HERE / "statements"
 EMAILS = PDFS / "_emails.json"
+CACHE = PDFS / "_parse_cache.json"
+pypdf_version = pypdf.__version__
 _cfg = json.load(open(HERE / "config.json")) if (HERE / "config.json").exists() else {}
 
 MONTHS = {m: i for i, m in enumerate(
@@ -69,11 +72,24 @@ def read_fitz_lines(path, pw):
     return [ln.strip() for p in d for ln in p.get_text().splitlines()]
 
 
+_text_memo = {}
+
+
 def read_pdf(path, pw):
+    # Text extraction is the slow part (pypdf, ~1-2s/file) and its result only depends on
+    # the file plus, for encrypted PDFs, which password opened it — so memoise per run.
+    # auto_detect_bank() tries every password on unrecognised files, which used to
+    # re-extract the same unencrypted text once per password.
     r = PdfReader(str(path))
-    if r.is_encrypted and str(r.decrypt(pw)) == "PasswordType.NOT_DECRYPTED":
-        return None
-    return clean("\n".join((p.extract_text() or "") for p in r.pages))
+    if not r.is_encrypted:
+        key = (str(path), None)
+    else:
+        if str(r.decrypt(pw)) == "PasswordType.NOT_DECRYPTED":
+            return None
+        key = (str(path), pw)
+    if key not in _text_memo:
+        _text_memo[key] = clean("\n".join((p.extract_text() or "") for p in r.pages))
+    return _text_memo[key]
 
 
 def ym_from_filename(fn):
@@ -402,9 +418,10 @@ def main():
                 att2date[a], att2from[a] = r["date"], r["from"]
                 att2subject[a] = r.get("subject", "")
 
-    records, ttb_receipts, skipped, card_qrs = [], [], [], {}
-    for f in sorted(glob.glob(str(PDFS / "*.pdf")) + glob.glob(str(PDFS / "*.PDF"))):
-        fn = os.path.basename(f)
+    def process_file(f, fn):
+        """Everything one PDF contributes: {skipped, receipt, qr, recs}. Pure function of the
+        file, its email metadata and the passwords — which is what makes it cacheable."""
+        out = {"skipped": [], "receipt": None, "qr": None, "recs": []}
         subj = att2subject.get(fn, "")
         parser, pwkey = route(fn, att2from.get(fn, ""), subj)
         if not parser:
@@ -412,30 +429,82 @@ def main():
             if re.search(r"statement|e-statement|ใบแจ้งยอด", subj or fn, re.I):
                 parser, pwkey = auto_detect_bank(f, PW)
         if not parser:
-            skipped.append(fn); continue
+            out["skipped"].append(fn); return out
         txt = read_pdf(f, PW.get(pwkey, ""))
         if txt is None:
-            skipped.append(fn + " (decrypt failed)"); continue
+            out["skipped"].append(fn + " (decrypt failed)"); out["uncacheable"] = True; return out
         if parser == "ttb_receipt":
-            r = parse_ttb_receipt(txt)
-            if r: ttb_receipts.append(r)
-            continue
+            out["receipt"] = parse_ttb_receipt(txt)
+            return out
         if pwkey in ("krungsri", "central"):
             lines = read_fitz_lines(f, PW.get(pwkey, ""))
             recs = p_krungsri_fitz(lines, "Central The 1" if pwkey == "central" else "") if lines else []
         else:
             recs = parser(txt, fn)
-        file_qr = extract_qr(f, PW.get(pwkey, ""), pwkey)
+        out["qr"] = extract_qr(f, PW.get(pwkey, ""), pwkey)
         fallback = ym_from_filename(fn) or email_month(att2date.get(fn))
         for rec in recs:
             if rec["amount"] is None:
-                skipped.append(fn + " (no amount)"); continue
+                out["skipped"].append(fn + " (no amount)"); continue
             # Prefer the statement's own closing date (most accurate); else filename/email.
             rec["month"] = ym_from_date(rec.get("stmt")) or fallback
             rec["file"] = fn
-            if file_qr:
-                card_qrs[(rec["issuer"], rec["last4"])] = file_qr
+            out["recs"].append(rec)
+        return out
+
+    # Per-PDF result cache. Statements never change once issued, so a monthly sync only
+    # needs to parse the new PDFs; the rest are replayed from disk. The key covers the
+    # file bytes, the email metadata that drives routing/month, and the parser + PDF
+    # library versions, so editing this script or upgrading a library re-parses everything.
+    # Outcomes that depend on the birthdate-derived passwords (decrypt failures) are never
+    # cached, and no password-derived value is stored.
+    version = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16] + "|" + "|".join(
+        [pypdf_version, getattr(fitz, "VersionBind", "nofitz") if fitz else "nofitz"])
+    cache = {}
+    if CACHE.exists():
+        try:
+            loaded = json.loads(CACHE.read_text())
+            if loaded.get("version") == version:
+                cache = loaded.get("files", {})
+        except Exception:
+            cache = {}
+    used_keys = set()
+
+    def save_cache():
+        tmp = CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"version": version, "files": cache}, ensure_ascii=False))
+        os.replace(tmp, CACHE)
+
+    records, ttb_receipts, skipped, card_qrs = [], [], [], {}
+    hits = 0
+    pdfs = sorted(glob.glob(str(PDFS / "*.pdf")) + glob.glob(str(PDFS / "*.PDF")))
+    for f in pdfs:
+        fn = os.path.basename(f)
+        key = hashlib.sha256(
+            Path(f).read_bytes() + "\0".join([fn, att2from.get(fn, ""), att2subject.get(fn, ""),
+                                              att2date.get(fn) or ""]).encode()).hexdigest()
+        used_keys.add(key)
+        out = cache.get(key)
+        if out is not None:
+            hits += 1
+        else:
+            out = process_file(f, fn)
+            if not out.pop("uncacheable", False):
+                cache[key] = out
+                save_cache()  # incremental: a timed-out cold run still keeps its progress
+        skipped.extend(out["skipped"])
+        if out["receipt"]:
+            ttb_receipts.append(out["receipt"])
+        for rec in out["recs"]:
+            if out["qr"]:
+                card_qrs[(rec["issuer"], rec["last4"])] = out["qr"]
             records.append(rec)
+    print(f"[cache] {hits}/{len(pdfs)} statement PDF(s) reused, {len(pdfs) - hits} parsed")
+    stale = set(cache) - used_keys
+    if stale:  # PDFs that were removed or changed — keep the cache from growing forever
+        for k in stale:
+            del cache[k]
+        save_cache()
 
     # Dedup: one statement per (card, month) — the same statement can arrive twice
     # (e.g. a regular e-statement + a call-center copy). Keep the richer one.

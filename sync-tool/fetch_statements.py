@@ -144,8 +144,16 @@ def main():
 
     print(f"Found {len(msgs)} email(s) in this window:\n" + "-" * 72)
     new_files = 0
+    skipped_known = 0
     for i, m in enumerate(msgs, 1):
         mid = m["id"]
+        # Emails never change once received. If we already stored this one and all its
+        # attachments are still on disk, skip the (slow) full download — every sync of the
+        # current month would otherwise re-fetch every email it already has.
+        known = by_id.get(mid)
+        if known and all((OUT / a).exists() for a in known.get("attachments", [])):
+            skipped_known += 1
+            continue
         msg = svc.users().messages().get(userId="me", id=mid, format="full").execute()
         headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
         acc = {"text": [], "html": [], "attachments": []}
@@ -186,8 +194,8 @@ def main():
     EMAILS.write_text(json.dumps(list(by_id.values()), ensure_ascii=False, indent=2))
     total_files = len(list(OUT.glob("*.pdf")) + list(OUT.glob("*.PDF")))
     print("-" * 72)
-    print(f"New files this run: {new_files} | total statements on disk: {total_files} | "
-          f"emails tracked: {len(by_id)}")
+    print(f"New files this run: {new_files} | already stored (skipped): {skipped_known} | "
+          f"total statements on disk: {total_files} | emails tracked: {len(by_id)}")
 
 
 if __name__ == "__main__":

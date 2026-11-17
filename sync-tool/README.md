@@ -69,6 +69,10 @@ from one date (`CARDPAY_DOB`):
 | ttb, Krungsri, Central The 1 | ddMmmyyyy | `23May1996` |
 
 ## Notes / limits
+- Syncs stay fast as statements pile up: `parse_statements.py` caches each PDF's parsed
+  result in `statements/_parse_cache.json` (keyed by file contents, email metadata and the
+  parser/library versions) and `fetch_statements.py` skips emails it already stored. Only
+  new statements are parsed/downloaded; delete the cache file to force a full re-parse.
 - The app stores **Total Payment Due** per card per month (what you owe that statement).
 - Krungsri / Central The 1 may only appear when you request a statement copy (they don't
   always email monthly e-statements to this address).
