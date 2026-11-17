@@ -619,6 +619,13 @@ function txRow(x) {
   const delBtn = h('button', { class: 'tx-del-btn', onclick: () => showTxOptions(x) }, t('common.delete'));
   const wrap = h('div', { class: 'tx-row-wrap' }, [h('div', { class: 'tx-row-actions' }, [delBtn]), row]);
   attachSwipeDelete(row, wrap);
+  // Tap toggles the full (un-clamped) description. Ignore the click that ends a swipe,
+  // and use a tap on a swiped-open row to close it instead.
+  row.addEventListener('click', () => {
+    if (row._dragged) return;
+    if (row._isOpen()) { row._closeSwipe(); return; }
+    row.classList.toggle('expanded');
+  });
   return wrap;
 }
 
@@ -636,6 +643,7 @@ function attachSwipeDelete(row) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (_swipeOpenRow && _swipeOpenRow !== row) _swipeOpenRow._closeSwipe();
     dragging = true; axis = null; startX = e.clientX; startY = e.clientY; dx = 0; pid = e.pointerId;
+    row._dragged = false;
     // Don't capture the pointer yet — wait until we know this is a horizontal drag,
     // so a vertical drag is left completely alone for the page's native scroll.
   });
@@ -645,7 +653,7 @@ function attachSwipeDelete(row) {
     if (axis === null) {
       if (Math.abs(rdx) < 6 && Math.abs(rdy) < 6) return;
       axis = Math.abs(rdx) > Math.abs(rdy) ? 'x' : 'y';
-      if (axis === 'x') { try { row.setPointerCapture(pid); } catch (_) {} }
+      if (axis === 'x') { row._dragged = true; try { row.setPointerCapture(pid); } catch (_) {} }
       else { dragging = false; return; } // vertical — hand off to native scroll entirely
     }
     if (axis !== 'x') return;
@@ -666,6 +674,7 @@ function attachSwipeDelete(row) {
   row.addEventListener('pointerup', end);
   row.addEventListener('pointercancel', end);
   row._closeSwipe = () => { open = false; setX(0, true); };
+  row._isOpen = () => open;
 }
 
 // Before deleting a transaction, ask which situation applies — the two behave differently:
