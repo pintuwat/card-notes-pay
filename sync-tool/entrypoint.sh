@@ -13,8 +13,17 @@ if [ ! -f /data/annotations.json ]; then
   printf '%s' '{"voided":[],"reimbursed":[]}' > /data/annotations.json
 fi
 
-if [ ! -f /data/token.json ] && [ -n "$GOOGLE_TOKEN_JSON" ]; then
-  printf '%s' "$GOOGLE_TOKEN_JSON" > /data/token.json
+# Seed the Gmail token from the env var on first boot, and again whenever the env
+# var changes (e.g. after revoking and re-authorizing) — otherwise the old token
+# already on the /data volume would keep being used. Between changes, the token
+# file the fetcher refreshes in place is left alone.
+if [ -n "$GOOGLE_TOKEN_JSON" ]; then
+  env_sha=$(printf '%s' "$GOOGLE_TOKEN_JSON" | sha256sum | cut -d' ' -f1)
+  if [ ! -f /data/token.json ] || [ "$(cat /data/.token_env_sha 2>/dev/null)" != "$env_sha" ]; then
+    printf '%s' "$GOOGLE_TOKEN_JSON" > /data/token.json
+    printf '%s' "$env_sha" > /data/.token_env_sha
+    echo "[entrypoint] Gmail token loaded from GOOGLE_TOKEN_JSON"
+  fi
 fi
 
 if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
